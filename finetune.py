@@ -8,6 +8,19 @@ from sklearn import preprocessing
 
 torch.set_default_tensor_type('torch.DoubleTensor')
 
+
+TotalNum = 100000
+Data_files = 'log9.csv'
+
+STATE_DIM =20
+ACTION_DIM =6
+hidden_size = (500,500)
+
+
+batch_size=1024
+epoch_size =30
+learning_rate =0.001
+
 def compute_normalization(data):
 	"""
 	Write a function to take in a dataset and compute the means, and stds.
@@ -21,6 +34,9 @@ def compute_normalization(data):
 
 	return scaler
 
+
+
+
 class MotionDataset(Dataset):
 	"""
 	Motion dataset.
@@ -29,18 +45,18 @@ class MotionDataset(Dataset):
 	def __init__(self):
 		# 初始化data
 		state, action = [], []
-		for i in range(27100):  ##the number of row!
+		for i in range(TotalNum):  ##the number of row!
 			state.append([])
 			action.append([])
 
-		with open('log9.csv', 'r') as f:
+		with open(Data_files, 'r') as f:
 			f_csv = csv.reader(f)
 			n_row = 0
 			for row in f_csv:
 				if n_row != 0:  # 第0行沒有資訊
-					for i in range(0, 20):
+					for i in range(0, STATE_DIM):
 						state[n_row - 1].append(float(row[i]))
-					for i in range(20, 26):
+					for i in range(STATE_DIM, STATE_DIM+ACTION_DIM):
 						action[n_row - 1].append(float(row[i]))
 				n_row = n_row + 1
 		state = np.array(state)
@@ -66,16 +82,18 @@ class MotionDataset(Dataset):
 
 class Model(torch.nn.Module):
 
-	def __init__(self):
+	def __init__(self,state_dim, action_dim, hidden_size=(128, 128), activation='tanh'):
 		"""
 		In the constructor we instantiate two nn.Linear module
 		"""
 		super(Model, self).__init__()
 
-		self.activation = F.tanh
-		state_dim = 20
-		hidden_size =(64,64)
-		action_dim =6
+		if activation == 'tanh':
+			self.activation = F.tanh
+		elif activation == 'relu':
+			self.activation = F.relu
+		elif activation == 'sigmoid':
+			self.activation = F.sigmoid
 
 		self.affine_layers =torch. nn.ModuleList()
 		last_dim = state_dim
@@ -100,24 +118,19 @@ class Model(torch.nn.Module):
 		y_pred = self.action_mean(x)
 		return y_pred
 
-batch_size=64
-epoch_size =20
 
 dataset = MotionDataset()
 train_loader = DataLoader(dataset=dataset,
 						  batch_size=batch_size,
 						  shuffle=True,
-						  num_workers=2)
+						  num_workers=0)
 
 
 # our model
-model = Model().cuda()
+model = Model(STATE_DIM, ACTION_DIM, hidden_size=hidden_size, activation='relu').cuda()
 
-# Construct our loss function and an Optimizer. The call to model.parameters()
-# in the SGD constructor will contain the learnable parameters of the two
-# nn.Linear modules which are members of the model.
 criterion = torch.nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
 
 
 dataset_size = train_loader.sampler.data_source.len
@@ -141,21 +154,17 @@ for epoch in range(epoch_size):
 			print('Epoch ',(epoch+1),'/',epoch_size,'-----------------------------')
 		if int(dataset_size/batch_size) >= 10:
 			if i in np.linspace(0,int(dataset_size/batch_size),num =10, dtype=int):
-				print('  ',batch_size*(i+1),'/',dataset_size,' - loss: %.3f'%loss.data[0])
-		else:
-			print('  ', batch_size * (i + 1), '/', dataset_size, '- loss: %.3f'%loss.data[0])
+				print('  ',batch_size*(i+1),'/',dataset_size,'----%.d'%(i),'%%------ - loss: %.3f'%loss.data[0])
 
 		# Zero gradients, perform a backward pass, and update the weights.
 		optimizer.zero_grad()
 		loss.backward()
 		optimizer.step()
 
-
 for param in model.parameters():
 	 print(type(param.data), param.size())
-	 print(list(param.data))
+	 #print(list(param.data))
 print(model)
-for param in model.parameters():
-	 print(type(param.data), param.size())
+
 # # save the net wight
 torch.save(model.state_dict(), 'net_params.pkl')  # save only the parameters

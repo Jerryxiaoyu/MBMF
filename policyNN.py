@@ -72,9 +72,7 @@ class NNDynamicsModel(torch.nn.Module):
 
 	def __init__(self,
 				 env,
-				 normalization,
 				 hidden_size=(500, 500),
-
 				 activation='relu',
 
 				 ):
@@ -89,8 +87,6 @@ class NNDynamicsModel(torch.nn.Module):
 		self.input_dim = obs_dim + act_dim
 		self.ouput_dim = obs_dim
 
-		self.scaler_x = normalization[0]
-		self.scaler_y = normalization[1]
 
 		if activation == 'relu':
 			self.activation = F.relu
@@ -168,8 +164,8 @@ class NNDynamicsModel(torch.nn.Module):
 				if int(dataset_size / batch_size) >= 10:
 					if i in np.linspace(0, int(dataset_size / batch_size), num=10, dtype=int):
 						print('  ', batch_size * (i + 1), '/', dataset_size, ' - loss: %.3f' % loss.data[0])
-				else:
-					print('  ', batch_size * (i + 1), '/', dataset_size, '- loss: %.3f' % loss.data[0])
+
+					# print('  ', batch_size * (i + 1), '/', dataset_size, '- loss: %.3f' % loss.data[0])
 
 				# Zero gradients, perform a backward pass, and update the weights.
 				optimizer.zero_grad()
