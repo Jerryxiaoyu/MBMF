@@ -1,0 +1,12 @@
+HalfCheetahEnvNew:
+
+obs 20
+atc 6
+reward 1
+
+    for fitting dynamics NN
+        data_x : {obs(20), act(6)} = 26
+        data_y : next_obs(20)-obs(20)  = 20
+    for training policy NN
+        state :obs(20)
+        action :act(6)
