@@ -9,6 +9,7 @@ from sklearn import preprocessing
 torch.set_default_tensor_type('torch.DoubleTensor')
 
 
+
 TotalNum = 100000
 Data_files = 'log9.csv'
 
