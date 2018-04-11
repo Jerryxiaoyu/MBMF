@@ -102,9 +102,9 @@ def sample(env,
 
 		cost = trajectory_cost_fn(cost_fn, observations, actions, next_observations)
 
-		path['observations'] = observations
-		path['next_observations'] = next_observations
-		path['actions'] = actions
+		path['observations'] = observations  #+ np.random.normal(0, 0.001, size =observations.shape)
+		path['next_observations'] = next_observations #+ np.random.normal(0, 0.001, size =next_observations.shape)
+		path['actions'] = actions  #+ np.random.normal(0, 0.001, size =actions.shape)
 		path['rewards'] = rewards
 		path['returns'] = returns
 		path['cost'] = cost
@@ -271,10 +271,8 @@ def train(env,
 		if itr != 0:
 			dyn_model.load_state_dict(torch.load(path + '/net_params.pkl'))
 
-		if (itr % 9) == 0 or itr == (onpol_iters-1):
-			logger = Logger(logdir, csvname='log' + str(itr))
-			data = np.concatenate((data_x, data_y), axis=1)
-			logger.log_table2csv(data)
+		data_x += np.random.normal(0, 0.001, size =data_x.shape)
+		data_y += np.random.normal(0, 0.001, size =data_y.shape)
 
 		dyn_model.fit(data_x, data_y, epoch_size=dynamics_iters, batch_size=batch_size)
 
@@ -323,6 +321,14 @@ def train(env,
 			costs[i] = paths[i]['cost']
 			returns[i] = paths[i]['returns'][0]
 
+		# store data
+		#if (itr % 9) == 0 or itr == (onpol_iters-1):
+		if itr >= 0:
+			logger = Logger(logdir, csvname='log' + str(itr))
+			data = np.concatenate((data_x, data_y), axis=1)
+			logger.log_table2csv(data)
+
+
 		# LOGGING
 		# Statistics for performance of MPC policy using
 		# our learned dynamics model
@@ -351,11 +357,11 @@ def main():
 	parser.add_argument('--render', action='store_true')
 	# Training args
 	parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3)
-	parser.add_argument('--onpol_iters', '-n', type=int, default=1)  # Aggregation iters 10
+	parser.add_argument('--onpol_iters', '-n', type=int, default=5)  # Aggregation iters 10
 	parser.add_argument('--dyn_iters', '-nd', type=int, default=60)  # epochs 50
 	parser.add_argument('--batch_size', '-b', type=int, default=512)
 	# Data collection
-	parser.add_argument('--random_paths', '-r', type=int, default=700)  # random path nums 700
+	parser.add_argument('--random_paths', '-r', type=int, default=100)  # random path nums 700
 	parser.add_argument('--onpol_paths', '-d', type=int, default=10)  # mpc path nums   30
 	parser.add_argument('--ep_len', '-ep', type=int, default=1000)  # 1000   path length  200 1000
 	# Neural network architecture args

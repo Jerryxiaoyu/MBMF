@@ -10,3 +10,9 @@ reward 1
     for training policy NN
         state :obs(20)
         action :act(6)
+
+
+
+run main.py         % Train dynamics model to get dataset containing good action : log.csv
+run funetune.py     %Pre-train policy net to get net parameters: net.pkl
+run trpo_gym.py         % load .pkl file and train NN using TRPO to achieve task
