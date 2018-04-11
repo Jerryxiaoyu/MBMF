@@ -361,7 +361,7 @@ def main():
 	parser.add_argument('--dyn_iters', '-nd', type=int, default=60)  # epochs 50
 	parser.add_argument('--batch_size', '-b', type=int, default=512)
 	# Data collection
-	parser.add_argument('--random_paths', '-r', type=int, default=100)  # random path nums 700
+	parser.add_argument('--random_paths', '-r', type=int, default=10)  # random path nums 700
 	parser.add_argument('--onpol_paths', '-d', type=int, default=10)  # mpc path nums   30
 	parser.add_argument('--ep_len', '-ep', type=int, default=1000)  # 1000   path length  200 1000
 	# Neural network architecture args

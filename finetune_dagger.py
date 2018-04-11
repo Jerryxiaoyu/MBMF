@@ -21,15 +21,15 @@ Testset_file = 'data/Test_EXPA02_1.csv'
 
 STATE_DIM =20
 ACTION_DIM =6
-hidden_size = (64,64)
+hidden_size = (500,500)
 
 #Fisrt train
 batch_size=2048
-epoch_size =500  #1000
-learning_rate =0.0005
+epoch_size =800  #1000
+learning_rate =0.0001
 
 #DAGGER
-n_episode = 3
+n_episode =3
 steps = 1000        # maximum step for a game
 n_epoch =200
 
@@ -37,7 +37,7 @@ n_epoch =200
 dyn_model =  torch.load('data/net.pkl')
 cost_fn = cheetah_cost_fn
 mpc_horizon =15
-num_simulated_paths=1000
+num_simulated_paths=10000
 
 
 
