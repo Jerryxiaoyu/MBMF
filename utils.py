@@ -111,7 +111,12 @@ def colorize(string, color, bold=False, highlight=False):
 	if bold: attr.append('1')
 	return '\x1b[%sm%s\x1b[0m' % (';'.join(attr), string)
 
-
+def log_info_write(path,str ):
+    name = 'info.txt'
+    f = open(path+'/'+name, 'a')
+    f.write(str)
+    f.write('\n')
+    f.close()
 
 
 

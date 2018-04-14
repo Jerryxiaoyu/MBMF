@@ -5,9 +5,11 @@ from torch.utils.data import Dataset, DataLoader
 import csv
 import torch.nn.functional as F
 from sklearn import preprocessing
-
+import logger
 torch.set_default_tensor_type('torch.DoubleTensor')
 
+
+tensor_logger = logger.Logger('./logs')
 
 def compute_normalization(data):
 	"""
@@ -93,6 +95,8 @@ class NNDynamicsModel(torch.nn.Module):
 		elif activation == 'tanh':
 			self.activation = F.tanh
 
+		self.dropout = torch.nn.Dropout(p=0.2)
+
 		self.affine_layers = torch.nn.ModuleList()
 		last_dim = self.input_dim
 		for nh in hidden_size:
@@ -100,6 +104,9 @@ class NNDynamicsModel(torch.nn.Module):
 			last_dim = nh
 
 		self.action_mean = torch.nn.Linear(last_dim, self.ouput_dim)
+
+
+
 
 	def forward(self, x):
 		"""
@@ -109,24 +116,23 @@ class NNDynamicsModel(torch.nn.Module):
 		"""
 		for affine in self.affine_layers:
 			x = self.activation(affine(x))
+			x= self.dropout(x)
 
 		y_pred = self.action_mean(x)
 		return y_pred
 
-	def fit(self, x, y, epoch_size=20, batch_size=512):
+	def fit(self, x, y, epoch_size=20, batch_size=512,test = False):
 
 		criterion = torch.nn.MSELoss()
 		optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+		if test is True:
+			train_len = int(x.shape[0] *0.8)
+			test_loader = Dataset(x[train_len:], y[train_len:])
+		else:
+			train_len =x.shape[0]
 
-		# self.scaler_x = compute_normalization(x)
-		# self.scaler_y = compute_normalization(y)
-		#
-		# data_x = self.scaler_x.transform(x)
-		# data_y = self.scaler_y.transform(y)
-
-
-		scaler_x = Normalization(x)
-		scaler_y = Normalization(y)
+		scaler_x = Normalization(x[:train_len])
+		scaler_y = Normalization(y[:train_len])
 
 		data_x = scaler_x.transform(x)
 		data_y = scaler_y.transform(y)
@@ -141,6 +147,8 @@ class NNDynamicsModel(torch.nn.Module):
 								  batch_size=batch_size,
 								  shuffle=True,
 								  num_workers=2)
+
+
 
 		dataset_size = train_loader.sampler.data_source.len
 		# Training loop
@@ -167,10 +175,53 @@ class NNDynamicsModel(torch.nn.Module):
 
 					# print('  ', batch_size * (i + 1), '/', dataset_size, '- loss: %.3f' % loss.data[0])
 
+
 				# Zero gradients, perform a backward pass, and update the weights.
 				optimizer.zero_grad()
 				loss.backward()
 				optimizer.step()
+
+				# ============ TensorBoard logging ============#
+				# (1) Log the scalar values
+				info = {
+					'loss': loss.data[0],
+					# 'accuracy': accuracy.data[0]
+				}
+
+				for tag, value in info.items():
+					tensor_logger.scalar_summary(tag, value, i + 1)
+
+				# (2) Log values and gradients of the parameters (histogram)
+				for tag, value in self.named_parameters():
+					tag = tag.replace('.', '/')
+					tensor_logger.histo_summary(tag, value.data.cpu().numpy(), i + 1)
+
+			if test is True:
+				for i, data in enumerate(test_loader, 0):
+					# get the inputs
+					inputs, labels = data
+					# wrap them in Variable
+					inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+					# Forward pass: Compute predicted y by passing x to the model
+					y_pred = self(inputs)
+
+					# Compute and print loss
+					loss = criterion(y_pred, labels)
+
+					# ============ TensorBoard logging ============#
+					# (1) Log the scalar values
+					info = {
+						'Val-loss': loss.data[0],
+						# 'accuracy': accuracy.data[0]
+					}
+
+					for tag, value in info.items():
+						tensor_logger.scalar_summary(tag, value, i + 1)
+
+
+				print('Epoch ', (epoch + 1), '/', epoch_size,
+					  'Validation loss %.3f' % loss.data[0])
+
 
 	def predict(self, state, action):
 		"""
@@ -188,9 +239,7 @@ class NNDynamicsModel(torch.nn.Module):
 
 		x_data = Variable(x_data)
 
-
 		f = self.forward(x_data)
-
 		f = f.data * self.scaler_cuda_y_scaler+self.scaler_cuda_y_mean
 		next_states = f + state
 

@@ -11,13 +11,6 @@ def sample_goals(num_goals):
 
 
 
-os.system("python main.py --env_name 'HalfCheetah-v2' -n 10 -r 700  -d 10 -ep 1000 -m 10 -sp 1000")
-os.system("python main.py --env_name 'My3-v1' 		  -n 10 -r 1000 -d 10 -ep 1000 -m 10 -sp 3000")
-os.system("python main.py --env_name 'Ant-v1' 		  -n 10 -r 1000 -d 10 -ep 1000 -m 10 -sp 3000")
-os.system("python main.py --env_name 'HalfCheetah-v2' -n 10 -r 700  -d 10 -ep 1000 -m 10 -sp 500")
-os.system("python main.py --env_name 'HalfCheetah-v2' -n 10 -r 700  -d 10 -ep 1000 -m 10 -sp 200")
-os.system("python main.py --env_name 'My3-v1' 		  -n 10 -r 1000 -d 10 -ep 1000 -m 10 -sp 1000")
+os.system("python main.py --env_name 'HalfCheetah-v2' -n 5  -nd 60 -b 512 -r 700  -d 10 -ep 1000 -m 15 -sp 10000  ")
+os.system("python main.py --env_name 'HalfCheetah-v2' -n 5  -nd 30 -b 512 -r 700  -d 10 -ep 1000 -m 15 -sp 10000 ")
 
-#os.system("python main.py --env_name 'HalfCheetah-v2' -n 2 -r 10 -d 2 -ep 1000 -m 1 -sp 10")
-# os.system("python main.py --env_name 'My3-v1' 		  -n 2 -r 10 -d 2 -ep 1000 -m 1 -sp 2")
-# os.system("python main.py --env_name 'Ant-v1' 		  -n 2 -r 10 -d 2 -ep 1000 -m 1 -sp 2")

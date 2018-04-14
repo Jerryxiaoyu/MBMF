@@ -14,11 +14,12 @@ import matplotlib.pyplot as plt
 from cheetah_env import HalfCheetahEnvNew
 
 from datetime import datetime
-from utils import Logger, configure_log_dir
+from utils import Logger, configure_log_dir, log_info_write
 import utils
 import time
 
 import torch
+
 
 
 Monitor = False
@@ -271,13 +272,25 @@ def train(env,
 		if itr != 0:
 			dyn_model.load_state_dict(torch.load(path + '/net_params.pkl'))
 
-		data_x += np.random.normal(0, 0.001, size =data_x.shape)
-		data_y += np.random.normal(0, 0.001, size =data_y.shape)
+		# store data
+		# if (itr % 9) == 0 or itr == (onpol_iters-1):
+		if itr >= 0:
+			logger = Logger(logdir, csvname='log_orig' + str(itr))
+			data = np.concatenate((data_x, data_y), axis=1)
+			logger.log_table2csv(data)
+		if itr == 0:
+			data_x += np.random.normal(0, 0.001, size =data_x.shape)
+			data_y += np.random.normal(0, 0.001, size =data_y.shape)
+		else:
+			data_x = best_x + np.random.normal(0, 0.001, size =best_x.shape)
+			data_y = best_y + np.random.normal(0, 0.001, size =best_y.shape)
 
-		dyn_model.fit(data_x, data_y, epoch_size=dynamics_iters, batch_size=batch_size)
+
+
+		dyn_model.fit(data_x, data_y, epoch_size=dynamics_iters, batch_size=batch_size , test = True)
 
 		torch.save(dyn_model.state_dict(), path + '/net_params.pkl')  # save only the parameters
-		torch.save(dyn_model, path + '/net.pkl')  # save entire net
+		torch.save(dyn_model, path + '/net'+str(itr)+'.pkl')  # save entire net
 
 		print('-------------Itr %d-------------' % itr)
 		print('Start time:\n')
@@ -321,11 +334,17 @@ def train(env,
 			costs[i] = paths[i]['cost']
 			returns[i] = paths[i]['returns'][0]
 
+		if itr == 0:
+			best_x = data_rl_x
+			best_y = data_rl_y
+		else:
+			best_x = np.concatenate((best_x, data_rl_x), axis=0)
+			best_y = np.concatenate((best_y, data_rl_y), axis=0)
 		# store data
 		#if (itr % 9) == 0 or itr == (onpol_iters-1):
 		if itr >= 0:
-			logger = Logger(logdir, csvname='log' + str(itr))
-			data = np.concatenate((data_x, data_y), axis=1)
+			logger = Logger(logdir, csvname='best' + str(itr))
+			data = np.concatenate((best_x, best_y), axis=1)
 			logger.log_table2csv(data)
 
 
@@ -358,20 +377,21 @@ def main():
 	# Training args
 	parser.add_argument('--learning_rate', '-lr', type=float, default=1e-3)
 	parser.add_argument('--onpol_iters', '-n', type=int, default=5)  # Aggregation iters 10
-	parser.add_argument('--dyn_iters', '-nd', type=int, default=60)  # epochs 50
+	parser.add_argument('--dyn_iters', '-nd', type=int, default=60)  # epochs 60
 	parser.add_argument('--batch_size', '-b', type=int, default=512)
 	# Data collection
-	parser.add_argument('--random_paths', '-r', type=int, default=10)  # random path nums 700
-	parser.add_argument('--onpol_paths', '-d', type=int, default=10)  # mpc path nums   30
-	parser.add_argument('--ep_len', '-ep', type=int, default=1000)  # 1000   path length  200 1000
+	parser.add_argument('--random_paths', '-r', type=int, default=700)  # random path nums 700
+	parser.add_argument('--onpol_paths', '-d', type=int, default=10)  # mpc path nums   10
+	parser.add_argument('--ep_len', '-ep', type=int, default=1000)  # 1000   path length   1000
 	# Neural network architecture args
 	parser.add_argument('--n_layers', '-l', type=int, default=2)
 	parser.add_argument('--size', '-s', type=int, default=500)
 	# MPC Controller
 	parser.add_argument('--mpc_horizon', '-m', type=int, default=15)  # mpc simulation H  10
-	parser.add_argument('--simulated_paths', '-sp', type=int, default=10000)  # mpc  candidate  K 100
+	parser.add_argument('--simulated_paths', '-sp', type=int, default=10000 )  # mpc  candidate  K 100
 	args = parser.parse_args()
 
+	print(args)
 	# Set seed
 	np.random.seed(args.seed)
 	tf.set_random_seed(args.seed)
@@ -391,6 +411,12 @@ def main():
 	logdir = configure_log_dir(logname=env_name, txt='-train')
 	utils.LOG_PATH = logdir
 
+
+
+	with open(logdir+'/info.txt', 'wt') as f:
+		print('Hello World!\n', file=f)
+		print(args, file=f)
+
 	train(env=env,
 		  cost_fn=cost_fn,
 		  logdir=logdir,
@@ -406,7 +432,7 @@ def main():
 		  mpc_horizon=args.mpc_horizon,
 		  n_layers=args.n_layers,
 		  size=args.size,
-		  activation='tanh',
+		  activation='relu',
 		  output_activation=None,
 		  )
 
