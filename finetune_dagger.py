@@ -8,43 +8,44 @@ from sklearn import preprocessing
 import gym
 from controllers import MPCcontroller
 from cost_functions import cheetah_cost_fn
+from utils import Logger, configure_log_dir
+import os
+from logger import Logger
 
 torch.set_default_tensor_type('torch.DoubleTensor')
 
 
-
+# Set the logger
+logger = Logger('./logs')
 
 env_name = 'HalfCheetah-v2'
-Trainset_file = 'data/Train_EXPA02_1.csv'
-Testset_file = 'data/Test_EXPA02_1.csv'
+Trainset_file = 'data/Train_EXPA03_he12.csv'
+Testset_file = 'data/Test_EXPA03_2.csv'
+
 
 
 STATE_DIM =20
 ACTION_DIM =6
-hidden_size = (500,500)
+hidden_size = (64,64)
 
 #Fisrt train
 batch_size=2048
-epoch_size =800  #1000
+epoch_size =500   #1000
 learning_rate =0.0001
 
 #DAGGER
-n_episode =3
+n_episode =4
 steps = 1000        # maximum step for a game
-n_epoch =200
+dagger_epoch_size =1000  #1000
+dagger_batch_size =1024 #
 
 #MPC
 dyn_model =  torch.load('data/net.pkl')
 cost_fn = cheetah_cost_fn
 mpc_horizon =15
-num_simulated_paths=10000
+num_simulated_paths=10000   # 10000
 
-
-
-
-
-
-
+logdir = configure_log_dir(logname=env_name, txt='-Dagger')
 
 
 def compute_normalization(data):
@@ -59,8 +60,6 @@ def compute_normalization(data):
 	scaler = preprocessing.StandardScaler().fit(data)
 
 	return scaler
-
-
 
 
 class MotionDataset(Dataset):
@@ -82,8 +81,8 @@ class MotionDataset(Dataset):
 		scaler_y = compute_normalization(action)
 		#
 		data_x = scaler_x.transform(state)
-		data_y = scaler_y.transform(action)
-#		data_y =action
+#		data_y = scaler_y.transform(action)
+		data_y =action
 
 		# data_x = state  #+ np.random.normal(0, 0.001, size =state.shape)
 		# data_y = action
@@ -104,7 +103,7 @@ class MotionDataset(Dataset):
 		scaler_y = compute_normalization(y)
 
 		x = scaler_x.transform(x)
-		y = scaler_y.transform(y)
+#		y = scaler_y.transform(y)
 
 		self.x_data = torch.cat((self.x_data, torch.from_numpy(x).double()),0)
 		self.y_data = torch.cat((self.y_data, torch.from_numpy(y).double()),0)
@@ -164,6 +163,88 @@ class Model(torch.nn.Module):
 		action = torch.normal(action_mean, action_std)
 		return action
 
+	def train(self, train_loader, epoch_size=100, batch_size=64,test_loader = None, plot = False, use_gpu = True, learning_rate = 0.0001):
+		criterion = torch.nn.MSELoss()
+		optimizer = torch.optim.Adam(self.parameters(),  lr=learning_rate)
+
+		#optimizer = torch.optim.RMSprop(self.parameters(), lr=learning_rate)
+
+		dataset_size = train_loader.sampler.data_source.len
+		# Training loop
+		for epoch in range(epoch_size):
+			for i, data in enumerate(train_loader, 0):
+
+				inputs, labels = data												# get the inputs
+				inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()	# wrap them in Variable
+				y_pred = model(inputs) 												# Forward pass: Compute predicted y by passing x to the model
+				loss = criterion(y_pred, labels)									# Compute and print loss
+
+				# if i == 0:															# show for debug
+				# 	print('Epoch ', (epoch + 1), '/', epoch_size, '-----------------------------')
+				# if int(dataset_size / batch_size) >= 10:
+				# 	if i in np.linspace(0, int(dataset_size / batch_size), num=10, dtype=int):
+				# 		print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
+				# 			  '%%------ - loss: %.3f' % loss.data[0])
+				# else:
+				# 	print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
+				# 		  '%%------ - loss: %.3f' % loss.data[0])
+				loss_train = loss  # for show
+				optimizer.zero_grad() 												# Zero gradients, perform a backward pass, and update the weights.
+				loss.backward()
+				optimizer.step()
+
+				# ============ TensorBoard logging ============#
+				# (1) Log the scalar values
+				info = {
+					'loss': loss.data[0],
+					#'accuracy': accuracy.data[0]
+				}
+
+				for tag, value in info.items():
+					logger.scalar_summary(tag, value, i + 1)
+
+				# (2) Log values and gradients of the parameters (histogram)
+				for tag, value in self.named_parameters():
+					tag = tag.replace('.', '/')
+					logger.histo_summary(tag, value.data.cpu().numpy(), i + 1)
+			#		logger.histo_summary(tag + '/grad', value.grad.data.cpu().numpy(), i + 1)
+
+				# (3) Log the images
+				# info = {
+				# 	'images': to_np(images.view(-1, 28, 28)[:10])
+				# }
+				#
+				# for tag, images in info.items():
+				# 	logger.image_summary(tag, images, step + 1)
+
+
+			if test_loader is not None:
+				for i, data in enumerate(test_loader, 0):
+					# get the inputs
+					inputs, labels = data
+					# wrap them in Variable
+					inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+					# Forward pass: Compute predicted y by passing x to the model
+					y_pred = model(inputs)
+
+					# Compute and print loss
+					loss = criterion(y_pred, labels)
+					# show for debug
+					#print('--------------------------------------Validation results:---------- - loss: %.3f' % loss.data[0])
+
+					# ============ TensorBoard logging ============#
+					# (1) Log the scalar values
+					info = {
+						'Val-loss': loss.data[0],
+						# 'accuracy': accuracy.data[0]
+					}
+
+					for tag, value in info.items():
+						logger.scalar_summary(tag, value, i + 1)
+
+			print('Epoch ', (epoch + 1), '/', epoch_size, 'Train loss %.3f'% loss_train.data[0],'Validation loss %.3f'% loss.data[0])
+
+
 env = gym.make(env_name)
 
 mpc_controller = MPCcontroller(env=env,
@@ -181,7 +262,7 @@ train_loader = DataLoader(dataset=dataset,
 						  num_workers=0)
 
 test_dataset = MotionDataset(Testset_file)
-test_loader = DataLoader(dataset=dataset,
+test_loader = DataLoader(dataset=test_dataset,
 						  batch_size= test_dataset.len,
 						  shuffle=True,
 						  num_workers=0)
@@ -190,62 +271,29 @@ test_loader = DataLoader(dataset=dataset,
 # our model
 model = Model(STATE_DIM, ACTION_DIM, hidden_size=hidden_size, activation='tanh').cuda()
 
-criterion = torch.nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
+
+model.train(train_loader,
+			epoch_size=epoch_size,
+			batch_size=batch_size,
+			test_loader = test_loader,
+			plot = False,
+			use_gpu = True,
+			learning_rate = 0.0001)
 
 
-dataset_size = train_loader.sampler.data_source.len
-# Training loop
-for epoch in range(epoch_size):
-	for i, data in enumerate(train_loader, 0):
-		# get the inputs
-		inputs, labels = data
-		# wrap them in Variable
-		inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
-		# Forward pass: Compute predicted y by passing x to the model
-		y_pred = model(inputs)
-
-		# Compute and print loss
-		loss = criterion(y_pred, labels)
-		#show for debug
-		if i ==0:
-			print('Epoch ',(epoch+1),'/',epoch_size,'-----------------------------')
-		if int(dataset_size/batch_size) >= 10:
-			if i in np.linspace(0,int(dataset_size/batch_size),num =10, dtype=int):
-				print('  ',batch_size*(i+1),'/',dataset_size,'----%.d'%(i),'%%------ - loss: %.3f'%loss.data[0])
-		else:
-			print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i), '%%------ - loss: %.3f' % loss.data[0])
-
-		# Zero gradients, perform a backward pass, and update the weights.
-		optimizer.zero_grad()
-		loss.backward()
-		optimizer.step()
-
-
-	for i, data in enumerate(test_loader,0):
-		# get the inputs
-		inputs, labels = data
-		# wrap them in Variable
-		inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
-		# Forward pass: Compute predicted y by passing x to the model
-		y_pred = model(inputs)
-
-		# Compute and print loss
-		loss = criterion(y_pred, labels)
-		# show for debug
-
-		print('--------------------------------------Validation results:---------- - loss: %.3f' % loss.data[0])
 
 for param in model.parameters():
 	 print(type(param.data), param.size())
 	 #print(list(param.data))
 print(model)
 
+path = os.path.join(logdir, 'model')
+os.makedirs(path)  # create path
 # # save the net wight
-#torch.save(model.state_dict(), 'model/net_params.pkl')  # save only the parameters
+torch.save(model.state_dict(), path+'/net_params.pkl')  # save only the parameters
 
 
-batch_size=1024
+
 ###===================== Aggregate and retrain
 
 for episode in range(n_episode):
@@ -259,13 +307,8 @@ for episode in range(n_episode):
 	print("# Episode: %d start" % (episode+1))
 	for i in range(steps):
 
-		#act = model.predict(img_reshape(ob.img))
-
 		state = Variable(torch.from_numpy(ob.reshape(1,-1)).double()).cuda()
-
-		# Forward pass: Compute predicted y by passing x to the model
-
-		act = model.select_action(state)
+		act = model.select_action(state)				# Forward pass: Compute predicted y by passing x to the model
 		ob, reward, done, _ = env.step(act.data.cpu())
 		if done is True:
 			break
@@ -278,9 +321,6 @@ for episode in range(n_episode):
 	print("#"*50)
 	#output_file.write('Number of Steps: %02d\t Reward: %0.04f\n' % (i, reward_sum))
 
-
-	# if i == (steps-1):
-	# 	break
 
 	print("# Episode %d"%(episode+1) , 'is generating best actions....')
 	action_all=[]
@@ -296,33 +336,13 @@ for episode in range(n_episode):
 							  shuffle=True,
 							  num_workers=0)
 
+	model.train(train_loader,
+				epoch_size=dagger_epoch_size,
+				batch_size=dagger_batch_size,
+				test_loader=test_loader,
+				plot=False,
+				use_gpu=True,
+				learning_rate=0.0001)
 
-	dataset_size = train_loader.sampler.data_source.len
-	# Training loop
-	for epoch in range(epoch_size):
-		for i, data in enumerate(train_loader, 0):
-			# get the inputs
-			inputs, labels = data
-			# wrap them in Variable
-			inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
-			# Forward pass: Compute predicted y by passing x to the model
-			y_pred = model(inputs)
-			# Compute and print loss
-			loss = criterion(y_pred, labels)
-			# show for debug
-			if i == 0:
-				print('Daager Episode: ',(episode+1),'Epoch ', (epoch + 1), '/', epoch_size, '-----------------------------')
-			if int(dataset_size / batch_size) >= 10:
-				if i in np.linspace(0, int(dataset_size / batch_size), num=10, dtype=int):
-					print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
-						  '%%------ - loss: %.3f' % loss.data[0])
-			else:
-				print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
-					  '%%------ - loss: %.3f' % loss.data[0])
 
-			# Zero gradients, perform a backward pass, and update the weights.
-			optimizer.zero_grad()
-			loss.backward()
-			optimizer.step()
-
-	torch.save(model.state_dict(), 'model/net_params'+str(episode)+'.pkl')  # save only the parameters
+	torch.save(model.state_dict(), path + '/net_params'+str(episode)+'.pkl')  # save only the parameters

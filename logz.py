@@ -18,6 +18,7 @@ A['EpRewMean']
 import os.path as osp, shutil, time, atexit, os, subprocess
 import pickle
 import tensorflow as tf
+import csv
 
 color2num = dict(
     gray=30,
@@ -112,3 +113,53 @@ def dump_tabular():
         G.output_file.flush()
     G.log_current_row.clear()
     G.first_row=False
+
+
+class LoggerCsv(object):
+	""" Simple training logger: saves to file and optionally prints to stdout """
+	def __init__(self, logdir,csvname = 'log'):
+		"""
+		Args:
+			logname: name for log (e.g. 'Hopper-v1')
+			now: unique sub-directory name (e.g. date/time string)
+		"""
+		self.path = os.path.join(logdir, csvname+'.csv')
+		self.write_header = True
+		self.log_entry = {}
+		self.f = open(self.path, 'w')
+		self.writer = None  # DictWriter created with first call to write() method
+
+	def write(self):
+		""" Write 1 log entry to file, and optionally to stdout
+		Log fields preceded by '_' will not be printed to stdout
+
+		"""
+		if self.write_header:
+			fieldnames = [x for x in self.log_entry.keys()]
+			self.writer = csv.DictWriter(self.f, fieldnames=fieldnames)
+			self.writer.writeheader()
+			self.write_header = False
+		self.writer.writerow(self.log_entry)
+		self.log_enbtry = {}
+
+
+	def log(self, items):
+		""" Update fields in log (does not write to file, used to collect updates.
+
+		Args:
+			items: dictionary of items to update
+		"""
+		self.log_entry.update(items)
+
+	def close(self):
+		""" Close log file - log cannot be written after this """
+		self.f.close()
+
+
+	def log_table2csv(self,data, header = True):
+		df = pd.DataFrame(data)
+		df.to_csv(self.path, index=False, header=header)
+
+	def log_csv2table(self):
+		data = pd.read_csv(self.path,header = 0,encoding='utf-8')
+		return np.array(data)

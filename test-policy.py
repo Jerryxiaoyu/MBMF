@@ -1,22 +1,53 @@
-import gym
-import numpy as np
-from datetime import datetime
-from utils import Logger, Scaler
-import csv
-import matplotlib.pyplot as plt
 import torch
+import numpy as np
+from torch.autograd import Variable
+from torch.utils.data import Dataset, DataLoader
+import csv
+import torch.nn.functional as F
+from sklearn import preprocessing
+import gym
+from controllers import MPCcontroller
+from cost_functions import cheetah_cost_fn
 from utils import Logger, configure_log_dir
 import os
+from logger import Logger
+from logz import LoggerCsv
 
-import keras
-from keras.datasets import mnist
-from keras.models import Sequential
-from keras.layers import Dense, Dropout
-from keras.optimizers import RMSprop,SGD,Adam,Adagrad
-from keras.models import load_model
-from keras.losses import mean_squared_error
+torch.set_default_tensor_type('torch.DoubleTensor')
 
-from sklearn import preprocessing
+
+# Set the logger
+logger = Logger('./logs')
+
+env_name = 'HalfCheetah-v2'
+Trainset_file = 'data/Train_EXPA03_he12.csv'
+Testset_file = 'data/Test_EXPA03_2.csv'
+
+
+
+STATE_DIM =20
+ACTION_DIM =6
+hidden_size = (64,64)
+
+#Fisrt train
+batch_size=2048
+epoch_size =500   #1000
+learning_rate =0.0001
+
+#DAGGER
+n_episode =10		# num of rollout
+steps = 10000        # model-based length
+dagger_epoch_size =1000  #1000
+dagger_batch_size =1024 #
+
+#MPC
+dyn_model =  torch.load('data/net.pkl')
+cost_fn = cheetah_cost_fn
+mpc_horizon =15
+num_simulated_paths=10000   # 10000
+
+logdir = configure_log_dir(logname=env_name, txt='-Test_policy')
+
 
 def compute_normalization(data):
 	"""
@@ -26,329 +57,262 @@ def compute_normalization(data):
 	X_scaled = scaler.transform(X)
 	X_inv=scaler.inverse_transform(X_scaled)
 	"""
-
 	""" YOUR CODE HERE """
 	scaler = preprocessing.StandardScaler().fit(data)
+
 	return scaler
 
-def run_RandomOnce(env):
-	""" Run single episode with random state
 
-		Args:
-			env: ai gym environment
+class MotionDataset(Dataset):
+	"""
+	Motion dataset.
+	"""
 
-		Returns: 4-tuple of NumPy arrays
-			observes_1: shape = (episode len, obs_dim)
-			actions: shape = (episode len, act_dim)
-			rewards: shape = (episode len,)
-			observes_2: shape = (episode len, obs_dim)
+	def __init__(self,Data_files):
+		# 初始化data
+
+		tmp = np.loadtxt(Data_files, dtype=np.str, delimiter=",")
+		state =  tmp[1:, 0:STATE_DIM].astype(np.float)
+		action = tmp[1:, STATE_DIM:STATE_DIM+ACTION_DIM].astype(np.float)
+		# state = np.array(state)
+		# action = np.array(action)
+
+
+		scaler_x = compute_normalization(state)
+		scaler_y = compute_normalization(action)
+		#
+		data_x = scaler_x.transform(state)
+#		data_y = scaler_y.transform(action)
+		data_y =action
+
+		# data_x = state  #+ np.random.normal(0, 0.001, size =state.shape)
+		# data_y = action
+
+		self.x_data = torch.from_numpy(data_x).double()
+		self.y_data = torch.from_numpy(data_y).double()
+		self.len = state.shape[0]
+
+	def __getitem__(self, index):
+		return self.x_data[index], self.y_data[index]
+
+	def __len__(self):
+		return self.len
+
+	def Aggregation(self, x, y):
+
+		scaler_x = compute_normalization(x)
+		scaler_y = compute_normalization(y)
+
+		x = scaler_x.transform(x)
+#		y = scaler_y.transform(y)
+
+		self.x_data = torch.cat((self.x_data, torch.from_numpy(x).double()),0)
+		self.y_data = torch.cat((self.y_data, torch.from_numpy(y).double()),0)
+
+
+class Model(torch.nn.Module):
+
+	def __init__(self,state_dim, action_dim, hidden_size=(128, 128), activation='tanh'):
 		"""
-	obs = env.reset()
-	observes_1, actions, rewards, observes_2 = [], [], [],[]
+		In the constructor we instantiate two nn.Linear module
+		"""
+		log_std =0.01
+		super(Model, self).__init__()
 
-	obs = obs.astype(np.float64).reshape((1, -1))
-	observes_1.append(obs)
-	action = env.action_space.sample()
-	action = action.astype(np.float64).reshape((1, -1))
-	actions.append(action)
-	obs, reward, done, _ = env.step(action)
-	obs = obs.astype(np.float64).reshape((1, -1))
-	observes_2.append(obs)
-	if not isinstance(reward, float):
-		reward = np.asscalar(reward)
-	rewards.append(reward)
+		if activation == 'tanh':
+			self.activation = F.tanh
+		elif activation == 'relu':
+			self.activation = F.relu
+		elif activation == 'sigmoid':
+			self.activation = F.sigmoid
 
-	return (np.concatenate(observes_1), np.concatenate(actions),
-			np.array(rewards, dtype=np.float64),np.concatenate(observes_2))
+		self.affine_layers =torch. nn.ModuleList()
+		last_dim = state_dim
+		for nh in hidden_size:
+			self.affine_layers.append(torch.nn.Linear(last_dim, nh))
+			last_dim = nh
 
-def run_rollout(env, LengthOfRollout):
-	""" Run  rollout with random state
+		self.action_mean = torch.nn.Linear(last_dim, action_dim)
+		self.action_mean.weight.data.mul_(0.1)
+		self.action_mean.bias.data.mul_(0.0)
 
-			Args:
-				env: ai gym environment
-				LengthOfRollout: length of the rollout
-
-			Returns: 4-tuple of NumPy arrays
-				observes_1: shape = (episode len, obs_dim)
-				actions: shape = (episode len, act_dim)
-				rewards: shape = (episode len,)
-				observes_2: shape = (episode len, obs_dim)
-	"""
-
-	obs = env.reset()
-	observes_1, actions, rewards, observes_2 = [], [], [],[]
-	for _ in range(LengthOfRollout):
-		obs = obs.astype(np.float64).reshape((1, -1))
-		observes_1.append(obs)
-		action = env.action_space.sample()
-		action = action.astype(np.float64).reshape((1, -1))
-		actions.append(action)
-		obs, reward, done, _ = env.step(action)
-		obs = obs.astype(np.float64).reshape((1, -1))
-		observes_2.append(obs)
-		if not isinstance(reward, float):
-			reward = np.asscalar(reward)
-		rewards.append(reward)
-
-	return (np.concatenate(observes_1), np.concatenate(actions),
-			np.array(rewards, dtype=np.float64),np.concatenate(observes_2))
+		self.action_log_std = torch.nn.Parameter(torch.ones(1, action_dim) * log_std)
 
 
-def run_rolloutScaler(env,scaler, LengthOfRollout):
-	""" Run  rollout with random state
+	def forward(self, x):
+		"""
+		In the forward function we accept a Variable of input data and we must return
+		a Variable of output data. We can use Modules defined in the constructor as
+		well as arbitrary operators on Variables.
+		"""
+		for affine in self.affine_layers:
+			x = F.tanh(affine(x))
 
-			Args:
-				env: ai gym environment
-				LengthOfRollout: length of the rollout
-
-			Returns: 4-tuple of NumPy arrays
-				observes_1: shape = (episode len, obs_dim)
-				actions: shape = (episode len, act_dim)
-				rewards: shape = (episode len,)
-				observes_2: shape = (episode len, obs_dim)
-	"""
-	scaler_action =Scaler(env.action_space.shape[0])
-	scaler_act, scaler_offset= scaler_action.get()
-	scale, offset = scaler.get()
-	scale[-1] = 1.0  # don't scale time step feature
-	offset[-1] = 0.0  # don't offset time step feature
-	obs = env.reset()
-	observes_1, actions, rewards, observes_2 = [], [], [], []
-	for _ in range(LengthOfRollout):
-		obs = obs.astype(np.float64).reshape((1, -1))
-		observes_1.append(obs)
-		action = env.action_space.sample()
-		action = action.astype(np.float64).reshape((1, -1))
-
-		actions.append(action)
-		obs, reward, done, _ = env.step(action)
-		obs = obs.astype(np.float64).reshape((1, -1))
-		observes_2.append(obs)
-
-		if not isinstance(reward, float):
-			reward = np.asscalar(reward)
-		rewards.append(reward)
-
-	return (np.concatenate(observes_1), np.concatenate(actions),
-			np.array(rewards, dtype=np.float64), np.concatenate(observes_2))
-
-def collect_data(env, datasize, Rollout_Collect = 'rollout', LengthOfRollout =100):
-	""" collect data
-			   Args:
-				   env: ai gym environment
-				   datasize: the number of total data
-				   Rollout_Collect : if choose rollout_collect, then True, else chose randonce_collect
-				   LengthOfRollout: length of the rollout
-
-			   Returns:
-				   True
-	   """
-	trajectory = {}
-	now = datetime.now().strftime("%b-%d_%H:%M:%S")  # create unique directories  格林尼治时间!!!  utcnow改为now
-	logger = Logger(logname=env_name, now=now)
-	print('Collection is processing:')
-	if Rollout_Collect != 'randonce':
-		if datasize % LengthOfRollout ==0:
-			Num_itr = int(datasize/LengthOfRollout)
-		else:
-			return print('Datasize is not devided by LengthOfRollout!')
-	else:
-		Num_itr = datasize
-	for num in range(Num_itr):
-		if Rollout_Collect=='rollout':
-			observes_1, actions, rewards, observes_2 = run_rollout(env,LengthOfRollout)
-		elif Rollout_Collect=='randonce':
-			observes_1, actions, rewards, observes_2 = run_RandomOnce(env)
-		elif Rollout_Collect=='rolloutScaler':
-			obs_dim = env.observation_space.shape[0]  # 20
-			scaler = Scaler(obs_dim)
-			observes_1, actions, rewards, observes_2 = run_rolloutScaler(env,scaler,LengthOfRollout)
-			observes_1s = scaler.preprocess(observes_1)
-			observes_2s = scaler.preprocess(observes_2)
-		else:
-			print("Param 'Rollout_Collect' wasn't given !")
-
-		x_data = np.concatenate((observes_1, actions), axis=1)
-		y_data = observes_2 - observes_1
-		obs_orig = np.concatenate((observes_1, observes_2), axis=1)
-		data = np.concatenate((x_data, y_data), axis=1)
-		for j in range(data.shape[0]):
-			for i in range(data.shape[1]):
-				trajectory[i] = data[j][i]
-			logger.log(trajectory)
-			logger.write(display=False)
-		#Completion info
-		if  (num+1) % ( Num_itr / 10) == 0:
-			print('Data has been being collected... %d%% '%((num+1)*100/Num_itr))
-	logger.close()
-	print('Collection is completed!\n')
-	return True
+		action_mean = self.action_mean(x)
 
 
-def load_data(data_name, data_num, test_percentage =0.2):
-	'''
-	取数据集中的前80%作为训练集,后20%为测试集合
-
-	:param data_name: name of the data file
-	:param data_num:  number of the data
-	:return: (x_train,y_train),(x_test,y_test)
-
-	load_data('logR1000L50.csv', data_num =50000)
-	'''
-
-	f = open('data/'+data_name, 'r')
-	row = csv.reader(f, delimiter=",")
-	n_row = 0
-	Num_data = data_num             #number of total data
-	Num_val =int( data_num * test_percentage )      #Validation set
-	x_train,y_train,x_test,y_test =[],[],[],[]
-	for i in range(Num_data):
-		x_train.append([])
-		y_train.append([])
-
-	for r in row:
-		if n_row != 0:
-			for i in range(26):
-				x_train[(n_row - 1) % Num_data].append(float(r[i]))
-			for i in range(26, 46):
-				y_train[(n_row - 1) % Num_data].append(float(r[i]))
-		n_row = n_row + 1
-	f.close()
-
-	x_train = np.array(x_train)
-	y_train = np.array(y_train)
-
-	x_test = x_train[Num_data-Num_val:]
-	y_test = y_train[Num_data-Num_val:]
-	x_train = np.delete(x_train, range(Num_data - Num_val, Num_data), 0)
-	y_train = np.delete(y_train, range(Num_data - Num_val, Num_data), 0)
-	print('Data is loaded!\n')
-	print('x_train shape', x_train.shape)
-	print('y_train shape', y_train.shape)
-	print('x_test shape', x_test.shape)
-	print('y_test shape', y_test.shape)
-
-	return (x_train,y_train),(x_test,y_test)
+		return action_mean
 
 
+	def select_action(self, x):
+		#action, _, _ = self.forward(x)
+		action_mean= self.forward(x)
 
-def predict_error_scaled(model, x_test,y_test,lengthOfRollout = 1000):
-	'''
-	对测试集进行误差预测
-	:param x_test:
-	:param y_test:
-	:return:
-	'''
-	logger_flag = False
+		action_log_std = self.action_log_std.expand_as(action_mean)
+		action_std = torch.exp(action_log_std)
 
-	#lengthOfRollout =x_test.shape[0]  #预测误差数据的长度
+		action = torch.normal(action_mean, action_std)
+		return action
 
-	[states_test,actions_test]= np.split(x_test, [20],axis=1)
+	def train(self, train_loader, epoch_size=100, batch_size=64,test_loader = None, plot = False, use_gpu = True, learning_rate = 0.0001):
+		criterion = torch.nn.MSELoss()
+		optimizer = torch.optim.Adam(self.parameters(),  lr=learning_rate)
 
-	states = torch.from_numpy(states_test).double().cuda()
-	actions = torch.from_numpy(actions_test).double().cuda()
-	observation = torch.zeros((lengthOfRollout,states.shape[1])).cuda()
-	for t in range(lengthOfRollout):
+		#optimizer = torch.optim.RMSprop(self.parameters(), lr=learning_rate)
 
-		# use dynamics model f to generate simulated rollouts
-		if t == 0:
-			observation[t] = states[0:1]
+		dataset_size = train_loader.sampler.data_source.len
+		# Training loop
+		for epoch in range(epoch_size):
+			for i, data in enumerate(train_loader, 0):
 
-		else:
-			observation[t] = next_obs
+				inputs, labels = data												# get the inputs
+				inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()	# wrap them in Variable
+				y_pred = model(inputs) 												# Forward pass: Compute predicted y by passing x to the model
+				loss = criterion(y_pred, labels)									# Compute and print loss
 
-		next_obs = model.predict(observation[t:t+1], actions[t:t+1])
+				# if i == 0:															# show for debug
+				# 	print('Epoch ', (epoch + 1), '/', epoch_size, '-----------------------------')
+				# if int(dataset_size / batch_size) >= 10:
+				# 	if i in np.linspace(0, int(dataset_size / batch_size), num=10, dtype=int):
+				# 		print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
+				# 			  '%%------ - loss: %.3f' % loss.data[0])
+				# else:
+				# 	print('  ', batch_size * (i + 1), '/', dataset_size, '----%.d' % (i),
+				# 		  '%%------ - loss: %.3f' % loss.data[0])
+				loss_train = loss  # for show
+				optimizer.zero_grad() 												# Zero gradients, perform a backward pass, and update the weights.
+				loss.backward()
+				optimizer.step()
 
-	states_eval = observation.cpu().numpy()
-	if logger_flag is True:
-		trajectory = {}
-		now = datetime.now().strftime("%b-%d_%H:%M:%S")  # create unique directories  格林尼治时间!!!  utcnow改为now
-		logger = Logger('predict', now=now)
-		for j in range(states_eval.shape[0]):
-			for i in range(states_eval.shape[1]):
-				trajectory[i] = states_eval[j][i]
-			logger.log(trajectory)
-			logger.write(display=False)
-		logger.close()
-	print('Prediction is finished !')
+				# ============ TensorBoard logging ============#
+				# (1) Log the scalar values
+				info = {
+					'loss': loss.data[0],
+					#'accuracy': accuracy.data[0]
+				}
 
-	mse = np.mean((states_test[0:lengthOfRollout] - states_eval) ** 2)
+				for tag, value in info.items():
+					logger.scalar_summary(tag, value, i + 1)
 
-	print('eorror = ',mse)
-	print('y_predict =', states_eval[1])
-	print('y_true =',  states_test[1] )
+				# (2) Log values and gradients of the parameters (histogram)
+				for tag, value in self.named_parameters():
+					tag = tag.replace('.', '/')
+					logger.histo_summary(tag, value.data.cpu().numpy(), i + 1)
+			#		logger.histo_summary(tag + '/grad', value.grad.data.cpu().numpy(), i + 1)
 
-	return states_eval
+				# (3) Log the images
+				# info = {
+				# 	'images': to_np(images.view(-1, 28, 28)[:10])
+				# }
+				#
+				# for tag, images in info.items():
+				# 	logger.image_summary(tag, images, step + 1)
 
 
+			if test_loader is not None:
+				for i, data in enumerate(test_loader, 0):
+					# get the inputs
+					inputs, labels = data
+					# wrap them in Variable
+					inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+					# Forward pass: Compute predicted y by passing x to the model
+					y_pred = model(inputs)
 
-env_name = 'HalfCheetah-v2'
+					# Compute and print loss
+					loss = criterion(y_pred, labels)
+					# show for debug
+					#print('--------------------------------------Validation results:---------- - loss: %.3f' % loss.data[0])
+
+					# ============ TensorBoard logging ============#
+					# (1) Log the scalar values
+					info = {
+						'Val-loss': loss.data[0],
+						# 'accuracy': accuracy.data[0]
+					}
+
+					for tag, value in info.items():
+						logger.scalar_summary(tag, value, i + 1)
+
+			print('Epoch ', (epoch + 1), '/', epoch_size, 'Train loss %.3f'% loss_train.data[0],'Validation loss %.3f'% loss.data[0])
+
+
 env = gym.make(env_name)
-obs_dim = env.observation_space.shape[0]  #20
-act_dim = env.action_space.shape[0]  #6
+
+mpc_controller = MPCcontroller(env=env,
+							   dyn_model=dyn_model,
+							   horizon=mpc_horizon,
+							   cost_fn=cost_fn,
+							   num_simulated_paths=num_simulated_paths,
+							   )
+
+
+dataset = MotionDataset(Trainset_file)
+train_loader = DataLoader(dataset=dataset,
+						  batch_size=batch_size,
+						  shuffle=True,
+						  num_workers=0)
+
+test_dataset = MotionDataset(Testset_file)
+test_loader = DataLoader(dataset=test_dataset,
+						  batch_size= test_dataset.len,
+						  shuffle=True,
+						  num_workers=0)
+
+
+# our model
+model = Model(STATE_DIM, ACTION_DIM, hidden_size=hidden_size, activation='tanh').cuda()
+
+
+model.load_state_dict(torch.load('model/net_params.pkl'))
 
 
 
-DataNum =50000
+
+###===================== Aggregate and retrain
+
+for episode in range(n_episode):
+	ob_list = []
+	act_list=[]
+	# restart the game for every episode
+	env = gym.make(env_name)
+	ob = env.reset()
+	reward_sum = 0.0
+	print("#"*50)
+	print("# Episode: %d start" % (episode+1))
+
+	"""create log.csv"""
+	logger = LoggerCsv(logdir, csvname='log_loss'+str(episode))
 
 
+	for i in range(steps):
+		state = Variable(torch.from_numpy(ob.reshape(1,-1)).double()).cuda()
+		act = model(state)				# Forward pass: Compute predicted y by passing x to the model
+		ob, reward, done, _ = env.step(act.data.cpu())
+		# if done is True:
+		# 	break
+		# else:
+		# 	ob_list.append(ob)
 
-#collect_data(env, DataNum, Rollout_Collect='rollout',LengthOfRollout =1000)
+		reward_sum += reward
 
+		logger.log({'steps': i,
+					'AverageReward': reward_sum,
 
-# # train set
-# (x_train,y_train),(x_test,y_test) = load_data('log-R50L1000.csv',test_percentage = 0.2, data_num =50000)
-# #scaler
-# scaler_x = compute_normalization(x_train)
-# scaler_y = compute_normalization(y_train)
-# normalization = [scaler_x, scaler_y]
+					})
+		logger.write()
 
-#train(x_train,y_train,x_test,y_test,model_name = 'my_model_scaled_01181405_001')
+		# print(i, reward, reward_sum, done, str(act[0]))
+	print("# step: %d reward: %f " % (i, reward_sum))
+	print("#"*50)
+	#output_file.write('Number of Steps: %02d\t Reward: %0.04f\n' % (i, reward_sum))
 
-# test set
-#(x_train,y_train),(x_test,y_test) = load_data('log-test1.csv', test_percentage = 1,data_num =1000)
-(x_train,y_train),(x_test,y_test) = load_data('log-test1.csv', test_percentage = 1,data_num =1000)
-num_predict =1000
-
-# reload model
-dyn_model = torch.load('net.pkl')
-
-
-states_eval = predict_error_scaled(dyn_model,x_test,y_test,lengthOfRollout = num_predict)
-
-
-# Create log files
-logdir = configure_log_dir(logname=env_name, txt='ModelTest')
-
-
-# save traj of evaluation
-logger = Logger(logdir, csvname='log_test' )
-trajectory={}
-tra_name =['s1-qpos1','s2-qpos2','s3-qpos3','s4-qpos4','s5-qpos5','s6-qpos6','s7-qpos7','s8-qpos8','s9-qvel0','s10-qvel1','s11-qvel2','s12-qvel3','s13-qvel4','s14-qvel5','s15-qvel6','s16-qvel7','s17-qvel8','s18-com0','s19-com1','s20-com2']
-for j in range(states_eval.shape[0]):
-	for i in range(states_eval.shape[1]):
-		trajectory[tra_name[i]] = states_eval[j][i]
-	logger.log(trajectory)
-	logger.write(display=False)
-logger.close()
-
-# save figures of evaluating
-state_name = ['s1-qpos1','s2-qpos2','s3-qpos3','s4-qpos4','s5-qpos5','s6-qpos6','s7-qpos7','s8-qpos8','s9-qvel0','s10-qvel1','s11-qvel2','s12-qvel3	','s13-qvel4','s14-qvel5','s15-qvel6','s16-qvel7','s17-qvel8','s18-com0','s19-com1','s20-com2']
-LengthOfCurve = 100 # the Length of Horizon in a curve
-
-x = range(LengthOfCurve)
-for i in range(20):
-	plt.figure()
-	plt.plot(x, states_eval[0:LengthOfCurve, i], label="$predict$")
-	plt.plot(x, x_test[0:LengthOfCurve:, i], label="$Actual$")
-
-	plt.xlabel("episode")
-	plt.ylabel("x(mm)")
-	plt.title("Prediction of the state: "+state_name[i])
-	plt.legend()
-	#plt.show()
-
-	path = os.path.join(logdir,'plot')
-	if not (os.path.exists(path)):
-		os.makedirs(path)
-	plt.savefig(logdir+'/plot/fig'+str(i)+'-'+state_name[i]+'.jpg')
