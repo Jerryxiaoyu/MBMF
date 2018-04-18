@@ -127,7 +127,12 @@ class NNDynamicsModel(torch.nn.Module):
 		optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
 		if test is True:
 			train_len = int(x.shape[0] *0.8)
-			test_loader = Dataset(x[train_len:], y[train_len:])
+			test_dataset = Dataset(x[train_len:], y[train_len:])
+
+			test_loader = DataLoader(dataset=test_dataset,
+									 batch_size=test_dataset.len,
+									 shuffle=True,
+									 num_workers=0)
 		else:
 			train_len =x.shape[0]
 

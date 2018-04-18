@@ -13,14 +13,15 @@ import os
 from logger import Logger
 
 torch.set_default_tensor_type('torch.DoubleTensor')
-
+TensorBoard = False
 
 # Set the logger
-logger = Logger('./logs')
+if TensorBoard:
+	logger = Logger('./logs')
 
 env_name = 'HalfCheetah-v2'
-Trainset_file = 'data/Train_EXPA03_he12.csv'
-Testset_file = 'data/Test_EXPA03_2.csv'
+Trainset_file = 'data/Train_best_A01.csv'#'data/Train_EXPA03_he12.csv'
+Testset_file = 'data/Test_best_A01.csv'#'data/Test_EXPA03_2.csv'
 
 
 
@@ -30,7 +31,7 @@ hidden_size = (64,64)
 
 #Fisrt train
 batch_size=2048
-epoch_size =500   #1000
+epoch_size =1000   #1000
 learning_rate =0.0001
 
 #DAGGER
@@ -40,12 +41,12 @@ dagger_epoch_size =1000  #1000
 dagger_batch_size =1024 #
 
 #MPC
-dyn_model =  torch.load('data/net.pkl')
+dyn_model =  torch.load('data/best_A01_net.pkl')  #net.pkl
 cost_fn = cheetah_cost_fn
 mpc_horizon =15
 num_simulated_paths=10000   # 10000
 
-logdir = configure_log_dir(logname=env_name, txt='-Dagger')
+logdir = configure_log_dir(logname=env_name, txt='-Dagger-scale')
 
 
 def compute_normalization(data):
@@ -73,16 +74,15 @@ class MotionDataset(Dataset):
 		tmp = np.loadtxt(Data_files, dtype=np.str, delimiter=",")
 		state =  tmp[1:, 0:STATE_DIM].astype(np.float)
 		action = tmp[1:, STATE_DIM:STATE_DIM+ACTION_DIM].astype(np.float)
-		# state = np.array(state)
-		# action = np.array(action)
 
 
-		scaler_x = compute_normalization(state)
-		scaler_y = compute_normalization(action)
+
+		self.scaler_x = compute_normalization(state)
+		self.scaler_y = compute_normalization(action)
 		#
-		data_x = scaler_x.transform(state)
-#		data_y = scaler_y.transform(action)
-		data_y =action
+		data_x = self.scaler_x.transform(state)
+		data_y = self.scaler_y.transform(action)
+#		data_y =action
 
 		# data_x = state  #+ np.random.normal(0, 0.001, size =state.shape)
 		# data_y = action
@@ -99,14 +99,16 @@ class MotionDataset(Dataset):
 
 	def Aggregation(self, x, y):
 
-		scaler_x = compute_normalization(x)
-		scaler_y = compute_normalization(y)
+		# scaler_x = compute_normalization(x)
+		# scaler_y = compute_normalization(y)
 
-		x = scaler_x.transform(x)
-#		y = scaler_y.transform(y)
+		x = self.scaler_x.transform(x)
+		y = self.scaler_y.transform(y)
 
 		self.x_data = torch.cat((self.x_data, torch.from_numpy(x).double()),0)
 		self.y_data = torch.cat((self.y_data, torch.from_numpy(y).double()),0)
+	def scaler(self):
+		return (self.scaler_x, self.scaler_y)
 
 
 class Model(torch.nn.Module):
@@ -195,27 +197,20 @@ class Model(torch.nn.Module):
 
 				# ============ TensorBoard logging ============#
 				# (1) Log the scalar values
-				info = {
-					'loss': loss.data[0],
-					#'accuracy': accuracy.data[0]
-				}
+				if TensorBoard:
+					info = {
+						'loss': loss.data[0],
 
-				for tag, value in info.items():
-					logger.scalar_summary(tag, value, i + 1)
+					}
 
-				# (2) Log values and gradients of the parameters (histogram)
-				for tag, value in self.named_parameters():
-					tag = tag.replace('.', '/')
-					logger.histo_summary(tag, value.data.cpu().numpy(), i + 1)
-			#		logger.histo_summary(tag + '/grad', value.grad.data.cpu().numpy(), i + 1)
+					for tag, value in info.items():
+						logger.scalar_summary(tag, value, i + 1)
 
-				# (3) Log the images
-				# info = {
-				# 	'images': to_np(images.view(-1, 28, 28)[:10])
-				# }
-				#
-				# for tag, images in info.items():
-				# 	logger.image_summary(tag, images, step + 1)
+					# (2) Log values and gradients of the parameters (histogram)
+					for tag, value in self.named_parameters():
+						tag = tag.replace('.', '/')
+						logger.histo_summary(tag, value.data.cpu().numpy(), i + 1)
+
 
 
 			if test_loader is not None:
@@ -232,15 +227,16 @@ class Model(torch.nn.Module):
 					# show for debug
 					#print('--------------------------------------Validation results:---------- - loss: %.3f' % loss.data[0])
 
+
 					# ============ TensorBoard logging ============#
 					# (1) Log the scalar values
-					info = {
-						'Val-loss': loss.data[0],
-						# 'accuracy': accuracy.data[0]
-					}
+					if TensorBoard:
+						info = {
+							'Val-loss': loss.data[0],
+						}
 
-					for tag, value in info.items():
-						logger.scalar_summary(tag, value, i + 1)
+						for tag, value in info.items():
+							logger.scalar_summary(tag, value, i + 1)
 
 			print('Epoch ', (epoch + 1), '/', epoch_size, 'Train loss %.3f'% loss_train.data[0],'Validation loss %.3f'% loss.data[0])
 
@@ -296,6 +292,7 @@ torch.save(model.state_dict(), path+'/net_params.pkl')  # save only the paramete
 
 ###===================== Aggregate and retrain
 
+
 for episode in range(n_episode):
 	ob_list = []
 	act_list=[]
@@ -306,10 +303,12 @@ for episode in range(n_episode):
 	print("#"*50)
 	print("# Episode: %d start" % (episode+1))
 	for i in range(steps):
-
-		state = Variable(torch.from_numpy(ob.reshape(1,-1)).double()).cuda()
-		act = model.select_action(state)				# Forward pass: Compute predicted y by passing x to the model
-		ob, reward, done, _ = env.step(act.data.cpu())
+		ob_s = dataset.scaler_x.transform(ob.reshape(1,-1))
+		state = Variable(torch.from_numpy(ob_s).double()).cuda()
+		#act = model.select_action(state)				# Forward pass: Compute predicted y by passing x to the model
+		act = model(state)
+		act_us = dataset.scaler_y.inverse_transform(act.data.cpu())
+		ob, reward, done, _ = env.step(act_us)
 		if done is True:
 			break
 		else:
@@ -319,8 +318,6 @@ for episode in range(n_episode):
 		# print(i, reward, reward_sum, done, str(act[0]))
 	print("# step: %d reward: %f " % (i, reward_sum))
 	print("#"*50)
-	#output_file.write('Number of Steps: %02d\t Reward: %0.04f\n' % (i, reward_sum))
-
 
 	print("# Episode %d"%(episode+1) , 'is generating best actions....')
 	action_all=[]
